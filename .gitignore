@@ -1,0 +1,70 @@
+# ========== 图像文件 ==========
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.tif
+*.svg
+*.ico
+*.webp
+*.heic
+
+# ========== 视频文件 ==========
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.flv
+*.wmv
+*.webm
+*.m4v
+
+# ========== Python 项目 ==========
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ========== 编辑器配置 ==========
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ========== 日志文件 ==========
+*.log
+logs/
+
+# ========== 临时文件 ==========
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# ========== 数据文件 ==========
+*.json
+*.csv
+*.xml
+*.dat
+*.pickle
+
+# ========== 开发环境 ==========
+.env
+*.env
+config_local.py
+
+#  =========md文档资料=========
+image/
