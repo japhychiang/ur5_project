@@ -1,0 +1,645 @@
+# UR5 机器人视觉定位系统 - 项目文档
+
+---
+
+## 目录
+
+1. [需求分析](#1-需求分析)
+   - 1.1 项目背景
+   - 1.2 功能需求
+   - 1.3 非功能需求
+   - 1.4 数据流分析
+
+2. [概要设计](#2-概要设计)
+   - 2.1 系统架构
+   - 2.2 模块划分
+   - 2.3 接口设计
+   - 2.4 数据流图
+
+3. [详细设计](#3-详细设计)
+   - 3.1 RobotCtrl（控制层）
+   - 3.2 TaskManager（业务层）
+   - 3.3 TaskApp（应用层）
+   - 3.4 vision_to_robot（坐标转换模块）
+   - 3.5 vision_trigger（视觉触发模块）
+   - 3.6 test_move_absolute（测试模块）
+
+4. [应用说明](#4-应用说明)
+   - 4.1 环境配置
+   - 4.2 运行方式
+   - 4.3 工作流程
+
+5. [优化建议](#5-优化建议)
+   - 5.1 代码质量
+   - 5.2 架构设计
+   - 5.3 配置管理
+   - 5.4 错误处理
+
+---
+
+## 1. 需求分析
+
+### 1.1 项目背景
+
+本项目是一个基于 **UR5 机器人** 和 **视觉系统** 的自动化定位与操作系统。系统通过 RTDE 协议控制 UR5 机器人，结合视觉系统获取工件坐标，实现工件的自动定位和螺丝孔插入操作。
+
+### 1.2 功能需求
+
+| 序号 | 功能点 | 描述 | 对应模块 |
+|------|--------|------|----------|
+| FR-01 | 机器人连接 | 通过 RTDE 协议建立与 UR5 机器人的通信连接 | RobotCtrl |
+| FR-02 | 姿态获取 | 获取机器人 TCP 当前姿态（位置和旋转） | RobotCtrl, TaskManager |
+| FR-03 | 关节位置获取 | 获取机器人 6 个关节的当前角度 | RobotCtrl, TaskManager |
+| FR-04 | 绝对位置移动 | 在基坐标系下移动到指定绝对坐标 | TaskManager |
+| FR-05 | 相对位置移动 | 在工具坐标系下进行相对移动 | TaskManager |
+| FR-06 | 移动完成等待 | 检测机器人移动是否完成 | TaskManager |
+| FR-07 | 视觉系统触发 | 通过 TCP 客户端触发视觉系统采图 | vision_trigger |
+| FR-08 | 坐标转换 | 将相机坐标系坐标转换为法兰坐标系坐标 | vision_to_robot |
+| FR-09 | 工件定位 | 基于视觉坐标实现工件精确定位 | vision_to_robot, TaskManager |
+| FR-10 | 返回初始位置 | 完成任务后返回机器人初始位置 | TaskManager |
+| FR-11 | 速度/加速度控制 | 设置和验证机器人运动参数 | TaskManager |
+| FR-12 | 安全确认 | 执行危险操作前的用户确认 | TaskApp |
+
+### 1.3 非功能需求
+
+| 序号 | 需求点 | 描述 |
+|------|--------|------|
+| NFR-01 | 实时性 | RTDE 通信延迟 < 100ms |
+| NFR-02 | 可靠性 | 连接失败自动重试，超时机制 |
+| NFR-03 | 安全性 | 速度范围限制，操作前确认 |
+| NFR-04 | 可扩展性 | 模块化设计，支持功能扩展 |
+| NFR-05 | 可维护性 | 清晰的代码结构，完整的日志输出 |
+
+### 1.4 数据流分析
+
+```
+视觉系统 ──JSON文件──→ vision_to_robot ──工件坐标──→ TaskManager ──运动指令──→ RobotCtrl ──RTDE──→ UR5机器人
+                    ↑                                      ↑
+                    │                                      │
+              vision_trigger ←──机器人数据─── RobotCtrl
+```
+
+---
+
+## 2. 概要设计
+
+### 2.1 系统架构
+
+采用**分层架构**设计，分为三层：
+
+```
+┌─────────────────────────────────────────────────┐
+│              应用层 (TaskApp)                    │
+│  负责用户交互和流程控制，协调各模块完成任务      │
+├─────────────────────────────────────────────────┤
+│              业务层 (TaskManager)                │
+│  封装机器人业务逻辑，单位转换，运动控制          │
+├─────────────────────────────────────────────────┤
+│              控制层 (RobotCtrl)                  │
+│  底层 RTDE 通信，与 UR5 机器人直接交互          │
+├─────────────────────────────────────────────────┤
+│              外部模块                            │
+│  vision_trigger (视觉触发)                      │
+│  vision_to_robot (坐标转换)                     │
+└─────────────────────────────────────────────────┘
+```
+
+### 2.2 模块划分
+
+| 模块 | 文件 | 职责 |
+|------|------|------|
+| 控制层 | RobotCtrl.py | RTDE 通信接口，基础运动控制 |
+| 业务层 | TaskManager.py | 业务逻辑封装，单位转换 |
+| 应用层 | TaskApp.py | 主程序入口，流程控制 |
+| 视觉触发 | vision_trigger.py | TCP 客户端触发视觉系统 |
+| 坐标转换 | vision_to_robot.py | 相机坐标到机器人坐标转换 |
+| 测试模块 | test_move_absolute.py | 功能测试 |
+
+### 2.3 接口设计
+
+#### 2.3.1 RobotCtrl 接口
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `__init__(robot_ip)` | robot_ip: str | - | 初始化控制器 |
+| `connect()` | - | bool | 建立 RTDE 连接 |
+| `disconnect()` | - | - | 断开连接 |
+| `get_tcp_pose()` | - | list[6] or None | 获取 TCP 姿态（m, rad） |
+| `get_joint_positions()` | - | list[6] or None | 获取关节位置（rad） |
+| `get_tcp_speed()` | - | list[6] or None | 获取 TCP 速度（m/s） |
+| `move_linear(target_pose, speed, accel)` | target_pose: list[6], speed: float, accel: float | bool | 线性移动 |
+
+#### 2.3.2 TaskManager 接口
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `__init__(robot_ip/robot_ctrl)` | robot_ip: str or robot_ctrl: RobotCtrl | - | 初始化任务管理器 |
+| `connect()` | - | bool | 连接机器人 |
+| `disconnect()` | - | - | 断开连接 |
+| `set_speed(speed)` | speed: float | bool | 设置速度（m/s） |
+| `set_acceleration(accel)` | accel: float | bool | 设置加速度（m/s²） |
+| `get_pose_base()` | - | list[6] or None | 获取基坐标系姿态 |
+| `move_to_absolute_position(x, y, z, rx, ry, rz)` | mm, deg | bool | 移动到绝对位置 |
+| `move_tool_relative(dx, dy, dz, drx, dry, drz)` | mm, deg | bool | 工具坐标系相对移动 |
+| `move_to_workpiece(coords)` | list[6] | bool | 移动到工件位置 |
+| `wait_for_motion_complete(timeout)` | timeout: float | bool | 等待移动完成 |
+| `back_to_home()` | - | bool | 返回初始位置 |
+
+#### 2.3.3 vision_trigger 接口
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `VisionTrigger.connect()` | - | bool | 连接视觉系统 |
+| `VisionTrigger.trigger_with_robot(robot_ctrl)` | robot_ctrl: RobotCtrl | dict or None | 触发视觉系统 |
+| `trigger_vision_system(robot_ctrl, host, port)` | robot_ctrl, host, port | bool | 独立触发函数 |
+
+#### 2.3.4 vision_to_robot 接口
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `load_workpiece_coords(folder_path)` | folder_path: str | tuple | (delta_xyz_mm, delta_rpy_deg) |
+| `transform_pose(A_pose, T_CF)` | A_pose: list[7], T_CF: np.array | list[7] | 坐标转换 |
+| `get_transform_matrix(pose_data)` | pose_data: list[7] | tuple | 构建变换矩阵 |
+
+### 2.4 数据流图
+
+```
+用户输入 ──→ TaskApp ──→ TaskManager ──→ RobotCtrl ──→ UR5机器人
+              │                │                  │
+              │                ↓                  ↓
+              │         获取姿态/关节         返回状态数据
+              │                │                  │
+              │                ↑                  ↑
+              │         vision_trigger ←──────────┘
+              │                │
+              │                ↓
+              │         视觉系统
+              │                │
+              │                ↓
+              │         JSON坐标文件
+              │                │
+              │                ↓
+              └────── vision_to_robot ←───────────┘
+```
+
+---
+
+## 3. 详细设计
+
+### 3.1 RobotCtrl（控制层）
+
+**文件**: `RobotCtrl.py`
+
+**核心类**: `RobotCtrl`
+
+**设计说明**:
+- 封装 UR RTDE 通信接口（rtde_control, rtde_receive）
+- 提供基础的机器人状态获取和运动控制方法
+- 单位采用机器人原始单位：位置（米）、旋转（弧度）
+
+**关键方法**:
+
+| 方法 | 实现逻辑 |
+|------|----------|
+| `connect()` | 初始化 RTDEControlInterface 和 RTDEReceiveInterface |
+| `get_tcp_pose()` | 调用 `rtde_r.getActualTCPPose()` 返回 [x, y, z, rx, ry, rz] |
+| `get_joint_positions()` | 调用 `rtde_r.getActualQ()` 返回 6 个关节角度 |
+| `move_linear()` | 调用 `rtde_c.moveL()` 执行线性移动 |
+
+**依赖**:
+- `ur-rtde` 库（RTDEControlInterface, RTDEReceiveInterface）
+
+### 3.2 TaskManager（业务层）
+
+**文件**: `TaskManager.py`
+
+**核心类**: `TaskManager`
+
+**设计说明**:
+- 封装机器人业务逻辑，提供更友好的高层接口
+- 处理单位转换：毫米/度 ↔ 米/弧度
+- 支持两种初始化方式：传入 IP 或已有的 RobotCtrl 实例
+
+**关键方法**:
+
+| 方法 | 实现逻辑 |
+|------|----------|
+| `move_to_absolute_position()` | 毫米→米、度→弧度转换，调用 `robot.move_linear()` |
+| `move_tool_relative()` | 获取当前姿态，计算旋转矩阵，将工具坐标系位移转换到基坐标系 |
+| `move_to_workpiece()` | 封装 `move_tool_relative()`，简化工件坐标移动调用 |
+| `wait_for_motion_complete()` | 循环检测 TCP 速度，低于阈值认为移动完成 |
+| `back_to_home()` | 先 Z 轴上移 50mm，再移动到固定绝对坐标 |
+
+**单位转换逻辑**:
+```
+输入单位: mm (位置), deg (旋转)
+输出单位: m = mm / 1000, rad = deg × π / 180
+```
+
+**旋转矩阵转换**:
+- `_axis_angle_to_rotation_matrix()`: 将轴角转换为 3×3 旋转矩阵
+- `_rotation_matrix_to_axis_angle()`: 将旋转矩阵转换回轴角
+- `_compose_axis_angles()`: 通过矩阵乘法组合两个旋转
+
+### 3.3 TaskApp（应用层）
+
+**文件**: `TaskApp.py`
+
+**设计说明**:
+- 主程序入口，负责整体流程控制
+- 用户交互界面（安全确认、操作确认）
+- 协调视觉触发、坐标转换、机器人运动等模块
+
+**执行流程**:
+
+```
+1. 初始化配置（机器人IP、数据目录）
+2. 创建 RobotCtrl 和 TaskManager
+3. 安全确认
+4. 连接机器人
+5. 第一次视觉触发（摆正位姿）
+6. 加载工件坐标，调整旋转角度
+7. 移动到工件位置（仅旋转）
+8. 第二次视觉触发（精确定位）
+9. 加载工件坐标（完整6DOF）
+10. 移动到工件位置（完整定位）
+11. 获取移动后姿态
+12. 插入螺丝孔（Z轴下移15mm）
+13. 用户确认是否返回初始位置
+14. 返回初始位置或结束
+15. 断开连接
+```
+
+### 3.4 vision_to_robot（坐标转换模块）
+
+**文件**: `vision_to_robot.py`
+
+**设计说明**:
+- 实现相机坐标系到法兰坐标系的坐标转换
+- 基于手眼标定外参进行坐标变换
+- 支持工件坐标系下的 Z 轴偏移
+
+**核心算法**:
+
+| 方法 | 算法说明 |
+|------|----------|
+| `get_transform_matrix()` | 从四元数构建 4×4 齐次变换矩阵 |
+| `transform_pose()` | 齐次矩阵乘法实现坐标转换 |
+| `offset_along_workpiece_z()` | 沿工件坐标系 Z 轴偏移 |
+| `calculate_delta_T()` | 计算目标位姿与当前位姿的偏差 |
+
+**坐标转换流程**:
+```
+相机坐标系 A (JSON文件)
+    ↓ 应用外参 T_CF（手眼标定结果）
+法兰坐标系 B
+    ↓ 沿工件 Z 轴偏移 a_meters
+最终目标位姿 C
+    ↓ 计算与当前位姿的偏差
+delta_xyz (mm), delta_rpy (deg)
+```
+
+**外参数据**:
+- 固定外参：`[0.118718, 0.040764, 0.085525, 0.707883, -0.010377, -0.009907, 0.706184]`
+- 单位：位置（米），四元数（w, x, y, z）
+
+### 3.5 vision_trigger（视觉触发模块）
+
+**文件**: `vision_trigger.py`
+
+**设计说明**:
+- TCP 客户端，ASCII 编码通信
+- 发送触发命令，解析返回状态码
+- 自动获取机器人当前状态并发送给视觉系统
+
+**协议规范**:
+
+| 项目 | 说明 |
+|------|------|
+| 协议类型 | TCP Client |
+| 编码方式 | ASCII |
+| 远程地址 | 127.0.0.1:50000 |
+| 命令格式 | `p,1,0,j1,j2,j3,j4,j5,j6,x,y,z,rx,ry,rz\r` |
+| 终止符 | `\r` |
+
+**状态码定义**:
+
+| 状态码 | 含义 |
+|--------|------|
+| 1 | 成功 |
+| 2 | 非法指令 |
+| 3 | 工程未加载 |
+| 4 | 无点云 |
+| 5 | 无结果 |
+| 6 | 规划失败 |
+| 7 | 其他错误 |
+
+**命令构建逻辑**:
+```
+1. 获取 TCP 位姿（m, rad）→ 转换为（mm, deg）
+2. 获取关节位置（rad）→ 转换为（deg）
+3. 组合命令: p,1,0,j1,j2,j3,j4,j5,j6,x,y,z,rx,ry,rz\r
+4. 发送命令并等待响应
+5. 解析状态码
+```
+
+### 3.6 test_move_absolute（测试模块）
+
+**文件**: `test_move_absolute.py`
+
+**设计说明**:
+- 测试 `move_to_absolute_position` 函数的有效性
+- 测试返回初始位置功能（Z 轴上移 + 绝对坐标移动）
+- 包含用户确认步骤
+
+---
+
+## 4. 应用说明
+
+### 4.1 环境配置
+
+#### 4.1.1 硬件要求
+
+| 设备 | 要求 |
+|------|------|
+| UR5 机器人 | 已启动，处于远程控制模式 |
+| 视觉系统 | 运行在 127.0.0.1:50000 |
+| 网络 | 机器人与 PC 网络连通 |
+
+#### 4.1.2 软件依赖
+
+```bash
+pip install numpy
+pip install scipy
+pip install ur-rtde
+```
+
+#### 4.1.3 配置参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| 机器人 IP | 192.168.0.10 | UR5 机器人地址 |
+| 视觉服务器 | 127.0.0.1:50000 | 视觉系统地址 |
+| 数据目录 | E:\圆心\1 | JSON 坐标文件路径 |
+| 默认速度 | 0.08 m/s | 机器人移动速度 |
+| 默认加速度 | 0.5 m/s² | 机器人加速度 |
+| 初始位置 | [-453.55, -198.15, 480.67, 173.30, -47.24, 0.34] | 毫米/度 |
+
+### 4.2 运行方式
+
+#### 4.2.1 运行主程序
+
+```bash
+# 默认 IP
+python TaskApp.py
+
+# 指定 IP
+python TaskApp.py 192.168.1.100
+```
+
+#### 4.2.2 运行测试程序
+
+```bash
+python test_move_absolute.py
+```
+
+#### 4.2.3 运行视觉触发测试
+
+```bash
+python vision_trigger.py
+```
+
+### 4.3 工作流程
+
+#### 4.3.1 主程序流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. 初始化                                                   │
+│     - 解析命令行参数（机器人IP）                               │
+│     - 创建 RobotCtrl 和 TaskManager                          │
+│     - 显示安全警告                                            │
+├─────────────────────────────────────────────────────────────┤
+│  2. 安全确认                                                 │
+│     - 用户输入 y/N 确认继续                                   │
+├─────────────────────────────────────────────────────────────┤
+│  3. 连接机器人                                               │
+│     - 建立 RTDE 连接                                          │
+├─────────────────────────────────────────────────────────────┤
+│  4. 第一次视觉触发（摆正位姿）                                 │
+│     - 发送触发命令                                            │
+│     - 等待 3 秒                                              │
+│     - 加载工件坐标（JSON 文件）                               │
+│     - 提取旋转角度，位置设为 0                                │
+│     - 工具坐标系相对移动（仅旋转）                             │
+│     - 等待移动完成                                            │
+├─────────────────────────────────────────────────────────────┤
+│  5. 第二次视觉触发（精确定位）                                 │
+│     - 发送触发命令                                            │
+│     - 等待 3 秒                                              │
+│     - 加载工件坐标（完整6DOF）                                │
+│     - 工具坐标系相对移动（完整定位）                           │
+│     - 等待移动完成                                            │
+├─────────────────────────────────────────────────────────────┤
+│  6. 获取移动后姿态                                           │
+├─────────────────────────────────────────────────────────────┤
+│  7. 插入螺丝孔                                               │
+│     - 工具坐标系 Z 轴下移 15mm                               │
+├─────────────────────────────────────────────────────────────┤
+│  8. 返回初始位置（可选）                                      │
+│     - 用户确认是否返回                                        │
+│     - Z 轴上移 50mm                                          │
+│     - 移动到固定绝对坐标                                      │
+├─────────────────────────────────────────────────────────────┤
+│  9. 断开连接                                                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 4.3.2 坐标转换流程
+
+```
+视觉系统输出（相机坐标系）
+    ↓ JSON 文件
+A_vector = [x, y, z, qw, qx, qy, qz]
+    ↓ get_static_camera_to_flange_pose()
+外参 T_CF（4×4 变换矩阵）
+    ↓ transform_pose()
+B_vector（法兰坐标系下的位姿）
+    ↓ offset_along_workpiece_z()
+C_vector（沿工件 Z 轴偏移后）
+    ↓ calculate_delta_T()
+delta_xyz_mm, delta_rpy_deg（相对当前位姿的偏差）
+    ↓ TaskManager.move_to_workpiece()
+机器人移动到工件位置
+```
+
+---
+
+## 5. 优化建议
+
+### 5.1 代码质量
+
+#### 5.1.1 配置参数集中管理
+
+**问题**: 当前配置参数分散在各个文件中（如机器人 IP、初始位置、数据目录等）。
+
+**建议**: 创建 `config.py` 配置文件，集中管理所有参数。
+
+```python
+# config.py
+ROBOT_CONFIG = {
+    'ip': '192.168.0.10',
+    'default_speed': 0.08,
+    'default_acceleration': 0.5,
+    'home_position': [-453.55, -198.15, 480.67, 173.30, -47.24, 0.34]
+}
+
+VISION_CONFIG = {
+    'host': '127.0.0.1',
+    'port': 50000,
+    'timeout': 10.0
+}
+
+DATA_CONFIG = {
+    'folder_path': r'E:\圆心\1',
+    'workpiece_offset': -0.15  # 沿工件 Z 轴偏移（米）
+}
+```
+
+#### 5.1.2 日志系统完善
+
+**问题**: 当前使用 `print()` 输出信息，缺乏统一的日志管理。
+
+**建议**: 使用 Python `logging` 模块，配置不同级别的日志输出。
+
+#### 5.1.3 类型注解完善
+
+**问题**: 部分函数缺乏类型注解，降低代码可读性。
+
+**建议**: 为所有函数添加类型注解，使用 `typing` 模块。
+
+### 5.2 架构设计
+
+#### 5.2.1 依赖注入改进
+
+**问题**: TaskManager 和 vision_trigger 都依赖 RobotCtrl，存在实例化混乱风险。
+
+**建议**: 采用依赖注入模式，统一管理 RobotCtrl 实例。
+
+```python
+class Application:
+    def __init__(self, robot_ip):
+        self.robot_ctrl = RobotCtrl(robot_ip)
+        self.task_manager = TaskManager(robot_ctrl=self.robot_ctrl)
+    
+    def run(self):
+        # 统一使用 self.robot_ctrl
+        success = trigger_vision_system(self.robot_ctrl)
+        # ...
+```
+
+#### 5.2.2 异常处理增强
+
+**问题**: 当前异常处理较为简单，缺乏重试机制。
+
+**建议**: 添加重试装饰器或重试逻辑，提高系统可靠性。
+
+```python
+def retry(max_retries=3, delay=1.0):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            for i in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if i < max_retries - 1:
+                        time.sleep(delay)
+                        continue
+                    raise
+        return wrapper
+    return decorator
+```
+
+#### 5.2.3 异步通信支持
+
+**问题**: 当前视觉触发使用同步阻塞方式，影响系统响应速度。
+
+**建议**: 使用 `asyncio` 和 `asyncio.open_connection()` 实现异步 TCP 通信。
+
+### 5.3 配置管理
+
+#### 5.3.1 .gitignore 规则修正
+
+**问题**: 当前 `.gitignore` 忽略所有 `*.json` 文件，但项目需要读取 JSON 坐标文件。
+
+**建议**: 修改 `.gitignore` 规则，仅忽略特定目录或临时 JSON 文件。
+
+```
+# 忽略数据目录中的 JSON 文件（视觉系统输出）
+E:/圆心/
+data/
+
+# 忽略临时文件
+*.tmp.json
+```
+
+#### 5.3.2 环境变量支持
+
+**建议**: 支持通过环境变量覆盖配置参数，便于不同环境部署。
+
+```python
+import os
+
+robot_ip = os.getenv('ROBOT_IP', '192.168.0.10')
+```
+
+### 5.4 错误处理
+
+#### 5.4.1 视觉触发状态码兼容
+
+**问题**: 视觉系统返回状态码 `4`（无点云），但实际可能表示其他含义。
+
+**建议**: 增加状态码映射的可配置性，支持自定义状态码含义。
+
+```python
+VISION_STATUS_MAP = {
+    1: 'success',
+    4: 'processing',  # 可根据实际情况调整
+    # ...
+}
+```
+
+#### 5.4.2 坐标加载失败处理
+
+**问题**: 当前坐标加载失败时仅打印错误，缺乏重试或降级策略。
+
+**建议**: 添加重试机制，支持最大重试次数配置。
+
+#### 5.4.3 机器人移动失败处理
+
+**问题**: 当前移动失败时直接返回 False，缺乏错误诊断信息。
+
+**建议**: 捕获并记录详细的错误信息，便于问题排查。
+
+---
+
+## 附录：文件清单
+
+| 文件 | 模块 | 行数 | 说明 |
+|------|------|------|------|
+| RobotCtrl.py | 控制层 | 69 | RTDE 通信接口 |
+| TaskManager.py | 业务层 | 291 | 业务逻辑封装 |
+| TaskApp.py | 应用层 | 150 | 主程序入口 |
+| vision_to_robot.py | 坐标转换 | 307 | 手眼坐标转换 |
+| vision_trigger.py | 视觉触发 | 471 | TCP 客户端 |
+| test_move_absolute.py | 测试模块 | 58 | 功能测试 |
+| README.md | 文档 | - | 项目说明 |
+| .gitignore | 配置 | - | Git 忽略规则 |
+
+---
+
+## 版本历史
+
+| 版本 | 日期 | 修改内容 |
+|------|------|----------|
+| v1.0 | 2026-06-25 | 初始版本 |
