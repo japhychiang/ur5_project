@@ -124,7 +124,7 @@ class TaskManager:
 
     def move_tool_relative(self, dx_mm=0, dy_mm=0, dz_mm=0, drx_deg=0, dry_deg=0, drz_deg=0, speed=None, acceleration=None):
         """
-        工具坐标系下相对移动
+        法兰坐标系下相对移动
         参数: dx_mm, dy_mm, dz_mm (mm), drx_deg, dry_deg, drz_deg (deg)
         """
         current_speed = speed if speed is not None else self.default_speed
@@ -145,7 +145,7 @@ class TaskManager:
         # 从轴角提取当前旋转矩阵
         R = self._axis_angle_to_rotation_matrix(current_pose[3], current_pose[4], current_pose[5])
         
-        # 将工具坐标系下的位移转换到基坐标系
+        # 将法兰坐标系下的位移转换到基坐标系
         delta_x = R[0][0] * dx + R[0][1] * dy + R[0][2] * dz
         delta_y = R[1][0] * dx + R[1][1] * dy + R[1][2] * dz
         delta_z = R[2][0] * dx + R[2][1] * dy + R[2][2] * dz
