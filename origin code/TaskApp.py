@@ -6,7 +6,7 @@ TaskApp - 应用层
 import sys
 import time
 from TaskManager import TaskManager
-from vision_to_robot import load_workpiece_coords
+from vision_to_rob import load_workpiece_coords
 from vision_trigger import trigger_vision_system
 from RobotCtrl import RobotCtrl
 
